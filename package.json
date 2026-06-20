@@ -1,0 +1,13 @@
+{
+  "name": "partner-publisher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Orchestrator for publishing v2 partner scripts to jsDelivr via docklib/v2. No source lives here.",
+  "scripts": {
+    "test": "echo \"no tests yet\" && exit 0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

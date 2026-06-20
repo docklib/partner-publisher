@@ -1,0 +1,70 @@
+name: Publish v2 partner script
+
+# Queue/poll variant — see dashboard PARTNER_PUBLISH_V2.md.
+# One run drains the ENTIRE queued queue in a loop (claim → fetch → vite build → push →
+# purge → report → repeat), so "Publish all" finishes in one ~2.5-min run.
+#
+# Trigger: MANUAL ONLY (workflow_dispatch from the Actions tab). No schedule — GitHub
+# free-plan crons are too unreliable (hourly gaps, 3+ hour silences) to be the prompt
+# trigger. Run workflow with no inputs = drain the queue; with static_id+config_name =
+# build just that partner (no audit row).
+#
+# Future: move this whole flow onto an isolated local server (see PARTNER_PUBLISH_V2.md
+# "Future: local-server flow") so we don't depend on GitHub Actions at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      static_id:
+        description: "Partner static id — leave blank to drain the whole queue"
+        required: false
+      config_name:
+        description: "Partner config name — leave blank to drain the whole queue"
+        required: false
+
+# Only one drain at a time (the loop already handles the whole queue). A manual
+# single-partner build also shares this group so it doesn't race a scheduled drain.
+concurrency:
+  group: publish-poller
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout publisher scripts
+        uses: actions/checkout@v4
+        with:
+          path: publisher
+
+      - name: Checkout private builder (senty-au/partner)
+        uses: actions/checkout@v4
+        with:
+          repository: senty-au/partner
+          token: ${{ secrets.PARTNER_REPO_PAT }}
+          path: partner
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install builder deps
+        run: npm ci
+        working-directory: partner
+
+      - name: Drain the publish queue (or build one partner)
+        working-directory: partner
+        env:
+          DASHBOARD_CONFIG_URL: ${{ secrets.DASHBOARD_CONFIG_URL }}
+          DASHBOARD_CONFIG_TOKEN: ${{ secrets.DASHBOARD_CONFIG_TOKEN }}
+          CDN_REPO_PAT: ${{ secrets.CDN_REPO_PAT }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          MANUAL_STATIC_ID: ${{ inputs.static_id }}
+          MANUAL_CONFIG_NAME: ${{ inputs.config_name }}
+        run: node ../publisher/scripts/drain-queue.mjs
