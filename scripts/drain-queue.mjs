@@ -19,22 +19,26 @@
  * build just that partner directly (no claim, no audit row) and exit.
  *
  * CWD = the builder repo (partner/). Publisher scripts are at ../publisher/scripts/.
- * Env: DASHBOARD_CONFIG_URL, DASHBOARD_CONFIG_TOKEN, CDN_REPO_PAT, GITHUB_RUN_ID,
- *      MANUAL_STATIC_ID?, MANUAL_CONFIG_NAME?
+ * Env: DASHBOARD_CONFIG_URL, DASHBOARD_PUBLISH_TOKEN, DASHBOARD_EXPORT_TOKEN, CDN_REPO_PAT,
+ *      GITHUB_RUN_ID, MANUAL_STATIC_ID?, MANUAL_CONFIG_NAME?
+ *      (Legacy: DASHBOARD_CONFIG_TOKEN is accepted as a fallback for both scopes.)
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const base = (process.env.DASHBOARD_CONFIG_URL || '').replace(/\/$/, '')
-const token = process.env.DASHBOARD_CONFIG_TOKEN
+// Dashboard contract (post-2026-07-23): scoped tokens. Fall back to the legacy
+// single DASHBOARD_CONFIG_TOKEN so the pipeline keeps working either way.
+const publishToken = process.env.DASHBOARD_PUBLISH_TOKEN || process.env.DASHBOARD_CONFIG_TOKEN
+const exportToken = process.env.DASHBOARD_EXPORT_TOKEN || publishToken
 const cdnToken = process.env.CDN_REPO_PAT
 const runId = process.env.GITHUB_RUN_ID || null
 const manualStaticId = process.env.MANUAL_STATIC_ID?.trim()
 const manualConfigName = process.env.MANUAL_CONFIG_NAME?.trim()
 
-if (!base || !token) {
-  console.error('drain-queue: DASHBOARD_CONFIG_URL and DASHBOARD_CONFIG_TOKEN are required')
+if (!base || !publishToken) {
+  console.error('drain-queue: DASHBOARD_CONFIG_URL and DASHBOARD_PUBLISH_TOKEN (or legacy DASHBOARD_CONFIG_TOKEN) are required')
   process.exit(1)
 }
 if (!cdnToken) {
@@ -42,7 +46,8 @@ if (!cdnToken) {
   process.exit(1)
 }
 
-const authHeaders = { Authorization: `Bearer ${token}` }
+const publishHeaders = { Authorization: `Bearer ${publishToken}` }
+const exportHeaders = { Authorization: `Bearer ${exportToken}` }
 const ghApiBase = 'https://api.github.com/repos/docklib/v2/contents'
 const ghHeaders = {
   Authorization: `Bearer ${cdnToken}`,
@@ -51,7 +56,7 @@ const ghHeaders = {
 }
 
 async function claimRow() {
-  const res = await fetch(`${base}/api/admin/publish-queue?claim=1`, { headers: authHeaders })
+  const res = await fetch(`${base}/api/admin/publish-queue?claim=1`, { headers: publishHeaders })
   if (!res.ok) throw new Error(`claim failed ${res.status} ${await res.text()}`)
   const body = await res.json()
   return body.publish ?? null
@@ -59,7 +64,7 @@ async function claimRow() {
 
 async function fetchConfig(configName, staticId) {
   const url = `${base}/api/widget-config-export/${encodeURIComponent(staticId)}?name=${encodeURIComponent(configName)}`
-  const res = await fetch(url, { headers: authHeaders })
+  const res = await fetch(url, { headers: exportHeaders })
   if (!res.ok) throw new Error(`fetch-config ${res.status} ${await res.text()}`)
   const body = await res.json()
   if (body.configName !== configName || body.staticId !== staticId) {
@@ -120,7 +125,7 @@ async function reportResult(publishId, status, { cdnCommitSha, message } = {}) {
   try {
     await fetch(`${base}/api/admin/publishes/${publishId}/result`, {
       method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      headers: { ...publishHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         status,
         cdn_commit_sha: cdnCommitSha || null,

@@ -62,6 +62,10 @@ jobs:
         working-directory: partner
         env:
           DASHBOARD_CONFIG_URL: ${{ secrets.DASHBOARD_CONFIG_URL }}
+          # Scoped tokens (preferred since the 2026-07-23 dashboard rename). Legacy
+          # DASHBOARD_CONFIG_TOKEN kept as fallback in drain-queue.mjs.
+          DASHBOARD_PUBLISH_TOKEN: ${{ secrets.DASHBOARD_PUBLISH_TOKEN }}
+          DASHBOARD_EXPORT_TOKEN: ${{ secrets.DASHBOARD_EXPORT_TOKEN }}
           DASHBOARD_CONFIG_TOKEN: ${{ secrets.DASHBOARD_CONFIG_TOKEN }}
           CDN_REPO_PAT: ${{ secrets.CDN_REPO_PAT }}
           GITHUB_RUN_ID: ${{ github.run_id }}
