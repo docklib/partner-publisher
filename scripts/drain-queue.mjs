@@ -19,15 +19,18 @@
  * build just that partner directly (no claim, no audit row) and exit.
  *
  * CWD = the builder repo (partner/). Publisher scripts are at ../publisher/scripts/.
- * Env: DASHBOARD_CONFIG_URL, DASHBOARD_PUBLISH_TOKEN, DASHBOARD_EXPORT_TOKEN, CDN_REPO_PAT,
- *      GITHUB_RUN_ID, MANUAL_STATIC_ID?, MANUAL_CONFIG_NAME?
- *      (Legacy: DASHBOARD_CONFIG_TOKEN is accepted as a fallback for both scopes.)
+ * Env: DASHBOARD_ADMIN_URL, DASHBOARD_EXPORT_URL, DASHBOARD_PUBLISH_TOKEN,
+ *      DASHBOARD_EXPORT_TOKEN, CDN_REPO_PAT, GITHUB_RUN_ID,
+ *      MANUAL_STATIC_ID?, MANUAL_CONFIG_NAME?
+ *      (Legacy: DASHBOARD_CONFIG_URL and DASHBOARD_CONFIG_TOKEN remain fallbacks.)
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-const base = (process.env.DASHBOARD_CONFIG_URL || '').replace(/\/$/, '')
+const legacyBase = process.env.DASHBOARD_CONFIG_URL || ''
+const adminBase = (process.env.DASHBOARD_ADMIN_URL || legacyBase).replace(/\/$/, '')
+const exportBase = (process.env.DASHBOARD_EXPORT_URL || legacyBase).replace(/\/$/, '')
 // Dashboard contract (post-2026-07-23): scoped tokens. Fall back to the legacy
 // single DASHBOARD_CONFIG_TOKEN so the pipeline keeps working either way.
 const publishToken = process.env.DASHBOARD_PUBLISH_TOKEN || process.env.DASHBOARD_CONFIG_TOKEN
@@ -37,8 +40,8 @@ const runId = process.env.GITHUB_RUN_ID || null
 const manualStaticId = process.env.MANUAL_STATIC_ID?.trim()
 const manualConfigName = process.env.MANUAL_CONFIG_NAME?.trim()
 
-if (!base || !publishToken) {
-  console.error('drain-queue: DASHBOARD_CONFIG_URL and DASHBOARD_PUBLISH_TOKEN (or legacy DASHBOARD_CONFIG_TOKEN) are required')
+if (!adminBase || !exportBase || !publishToken) {
+  console.error('drain-queue: dashboard admin/export URLs and DASHBOARD_PUBLISH_TOKEN (or legacy DASHBOARD_CONFIG_TOKEN) are required')
   process.exit(1)
 }
 if (!cdnToken) {
@@ -55,17 +58,42 @@ const ghHeaders = {
   'X-GitHub-Api-Version': '2022-11-28',
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function fetchWithRetry(label, url, options = {}) {
+  let lastError
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // A redirect on a machine endpoint almost always means auth/routing is broken. Never
+      // follow it into an HTML login page and accidentally report a successful drain.
+      const res = await fetch(url, { ...options, redirect: 'error' })
+      if (res.ok) return res
+      const body = (await res.text()).slice(0, 500)
+      const error = new Error(`${label} failed ${res.status} ${body}`)
+      if (res.status < 500 && res.status !== 429) throw error
+      lastError = error
+    } catch (error) {
+      lastError = error
+      if (attempt === 3) break
+    }
+    await sleep(500 * 2 ** (attempt - 1))
+  }
+  throw lastError
+}
+
 async function claimRow() {
-  const res = await fetch(`${base}/api/admin/publish-queue?claim=1`, { headers: publishHeaders })
-  if (!res.ok) throw new Error(`claim failed ${res.status} ${await res.text()}`)
+  const res = await fetchWithRetry(
+    'claim',
+    `${adminBase}/api/admin/publish-queue?claim=1`,
+    { headers: publishHeaders }
+  )
   const body = await res.json()
   return body.publish ?? null
 }
 
 async function fetchConfig(configName, staticId) {
-  const url = `${base}/api/widget-config-export/${encodeURIComponent(staticId)}?name=${encodeURIComponent(configName)}`
-  const res = await fetch(url, { headers: exportHeaders })
-  if (!res.ok) throw new Error(`fetch-config ${res.status} ${await res.text()}`)
+  const url = `${exportBase}/api/widget-config-export/${encodeURIComponent(staticId)}?name=${encodeURIComponent(configName)}`
+  const res = await fetchWithRetry('fetch-config', url, { headers: exportHeaders })
   const body = await res.json()
   if (body.configName !== configName || body.staticId !== staticId) {
     throw new Error(`config mismatch: requested ${configName}/${staticId}, got ${body.configName}/${body.staticId}`)
@@ -122,20 +150,16 @@ async function purgeCdn(staticId) {
 
 async function reportResult(publishId, status, { cdnCommitSha, message } = {}) {
   if (!publishId) return // manual mode has no audit row
-  try {
-    await fetch(`${base}/api/admin/publishes/${publishId}/result`, {
-      method: 'POST',
-      headers: { ...publishHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status,
-        cdn_commit_sha: cdnCommitSha || null,
-        github_run_id: runId ? Number(runId) : null,
-        message: message || null,
-      }),
-    })
-  } catch (e) {
-    console.error(`drain-queue: report ${publishId} failed (non-fatal): ${e.message}`)
-  }
+  await fetchWithRetry('report-result', `${adminBase}/api/admin/publishes/${publishId}/result`, {
+    method: 'POST',
+    headers: { ...publishHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      status,
+      cdn_commit_sha: cdnCommitSha || null,
+      github_run_id: runId ? Number(runId) : null,
+      message: message || null,
+    }),
+  })
 }
 
 async function processOne({ id, config_name, static_id }) {
@@ -179,7 +203,8 @@ while (true) {
   try {
     row = await claimRow()
   } catch (e) {
-    console.error(`drain-queue: claim error, stopping: ${e.message}`)
+    console.error(`drain-queue: claim error, failing run: ${e.message}`)
+    process.exitCode = 1
     break
   }
   if (!row) {
@@ -205,3 +230,4 @@ const elapsed = Math.round((Date.now() - start) / 1000)
 console.log(
   `\ndrain-queue: done — processed ${processed}, success ${successes}, failed ${failures}, ${elapsed}s`
 )
+if (failures > 0) process.exitCode = 1

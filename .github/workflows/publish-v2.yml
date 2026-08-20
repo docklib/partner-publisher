@@ -23,7 +23,7 @@ on:
         required: false
 
 # Only one drain at a time (the loop already handles the whole queue). A manual
-# single-partner build also shares this group so it doesn't race a scheduled drain.
+# single-partner build shares this group so it doesn't race a full drain.
 concurrency:
   group: publish-poller
   cancel-in-progress: false
@@ -61,7 +61,10 @@ jobs:
       - name: Drain the publish queue (or build one partner)
         working-directory: partner
         env:
-          DASHBOARD_CONFIG_URL: ${{ secrets.DASHBOARD_CONFIG_URL }}
+          # Admin APIs moved to dash during the app split; config export remains on publisher.
+          # Keep these explicit so a stale pre-split Actions variable cannot silently drain nothing.
+          DASHBOARD_ADMIN_URL: https://dash.senty.com.au
+          DASHBOARD_EXPORT_URL: https://publisher.senty.com.au
           # Scoped tokens (preferred since the 2026-07-23 dashboard rename). Legacy
           # DASHBOARD_CONFIG_TOKEN kept as fallback in drain-queue.mjs.
           DASHBOARD_PUBLISH_TOKEN: ${{ secrets.DASHBOARD_PUBLISH_TOKEN }}
