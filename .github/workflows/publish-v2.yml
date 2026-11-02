@@ -61,10 +61,10 @@ jobs:
       - name: Drain the publish queue (or build one partner)
         working-directory: partner
         env:
-          # Admin APIs moved to dash during the app split; config export remains on publisher.
+          # Admin APIs and the config export are both on dash (publisher export 500s since 11-02).
           # Keep these explicit so a stale pre-split Actions variable cannot silently drain nothing.
           DASHBOARD_ADMIN_URL: https://dash.senty.com.au
-          DASHBOARD_EXPORT_URL: https://publisher.senty.com.au
+          DASHBOARD_EXPORT_URL: https://dash.senty.com.au
           # Scoped tokens (preferred since the 2026-07-23 dashboard rename). Legacy
           # DASHBOARD_CONFIG_TOKEN kept as fallback in drain-queue.mjs.
           DASHBOARD_PUBLISH_TOKEN: ${{ secrets.DASHBOARD_PUBLISH_TOKEN }}
